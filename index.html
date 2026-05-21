@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>iTunes Metadata Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; color: #eee; font-family: system-ui, sans-serif; }
+  input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cursor: pointer; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #111; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── Storage: usa localStorage fora do Claude ──────────────────
+const storage = {
+  get: (key) => { const v = localStorage.getItem(key); return v ? { value: v } : null; },
+  set: (key, val) => { localStorage.setItem(key, val); return true; },
+};
+
+const esc = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const S = {
+  inp: {width:"100%",padding:"6px 10px",borderRadius:6,border:"1px solid #444",background:"#111",color:"#eee",fontSize:13,boxSizing:"border-box"},
+  lbl: {display:"block",fontSize:10,color:"#888",marginBottom:3,textTransform:"uppercase",letterSpacing:".6px",fontWeight:600},
+  card: {background:"#1a1a1a",border:"1px solid #2e2e2e",borderRadius:8,padding:14,marginBottom:12},
+  addBtn: {padding:"7px 12px",borderRadius:6,border:"1px dashed #555",background:"transparent",color:"#aaa",cursor:"pointer",fontSize:12,width:"100%",marginTop:6},
+  rmBtn: {padding:"3px 8px",borderRadius:4,border:"1px solid #c0392b33",background:"#c0392b18",color:"#e74c3c",cursor:"pointer",fontSize:11,flexShrink:0},
+};
+const g2={display:"grid",gridTemplateColumns:"1fr 1fr",gap:10};
+const g3={display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10};
+const g4={display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8};
+
+const TC_FORMATS=[
+  {v:"24/1 1/nonDrop",     l:"24fps",    desc:"Film / DCP — 24 frames reais"},
+  {v:"24/999 1000/nonDrop",l:"23.98fps", desc:"NTSC Film — 23.976 (mais comum)"},
+  {v:"25/1 1/nonDrop",     l:"25fps",    desc:"PAL"},
+  {v:"30000/1001 1/nonDrop",l:"29.97fps",desc:"NTSC Video nonDrop"},
+  {v:"30000/1001 1/drop",  l:"29.97 DF", desc:"NTSC Video Drop Frame"},
+];
+const ADVISORIES=[
+  {code:"CS",label:"CS – Conteúdo Sexual"},{code:"SE",label:"SE – Sexo Explícito"},
+  {code:"D",label:"D – Drogas"},{code:"DL",label:"DL – Drogas Lícitas"},
+  {code:"DI",label:"DI – Drogas Ilícitas"},{code:"V",label:"V – Violência"},
+  {code:"VE",label:"VE – Violência Extrema"},{code:"VF",label:"VF – Violência Fantasiosa"},
+  {code:"L",label:"L – Linguagem Imprópria"},{code:"LL",label:"LL – Linguagem Imprópria"},
+  {code:"N",label:"N – Nudez"},{code:"TS",label:"TS – Temática Sexual"},
+];
+const GENRE_OPTIONS=[
+  {code:"DRAMA-00",name:"Drama"},{code:"COMEDY-00",name:"Comédia"},
+  {code:"ACTION-00",name:"Ação"},{code:"DOCUMENTARY-00",name:"Documentário"},
+  {code:"THRILLER-00",name:"Thriller"},{code:"HORROR-00",name:"Terror"},
+  {code:"ROMANCE-00",name:"Romance"},{code:"ANIMATION-00",name:"Animação"},
+  {code:"FAMILY-00",name:"Família"},{code:"CRIME-00",name:"Crime"},
+  {code:"MUSICALS-00",name:"Musicals"},
+];
+const CREW_ROLES=["Director","Screenwriter","Producer","Executive Producer",
+  "Director of Photography","Editor","Composer","Production Designer",
+  "Costume Designer","Casting Director","Visual Effects Supervisor"];
+const LOCALES=[{v:"pt-BR",l:"pt-BR"},{v:"pt-PT",l:"pt-PT"},{v:"en-US",l:"en-US"},
+  {v:"es",l:"es"},{v:"es-419",l:"es-419"},{v:"fr",l:"fr"},{v:"de",l:"de"},
+  {v:"it",l:"it"},{v:"ja",l:"ja"},{v:"zh-CN",l:"zh-CN"}];
+const COUNTRIES=["BR","US","AR","CL","MX","GB","FR","DE","IT","ES","PT","CO","PE","WW"];
+
+const chFile=i=>`capitulo${String(i+1).padStart(2,"0")}.jpg`;
+const assetFiles=vid=>({
+  ff:vid?`${vid}-source.mov`:"",   fn:vid?`${vid}-notes.pdf`:"",
+  pf:vid?`${vid}-preview.mov`:"",  af:vid?`${vid}.jpg`:"",
+  a16:vid?`${vid}_16_9.png`:"",   bw:vid?`${vid}_backdrop_wide.png`:"",
+  bt:vid?`${vid}_backdrop_tall.png`:"", lf:vid?`${vid}_fullcolor_logo.png`:"",
+  ls:vid?`${vid}_singlecolor_logo.png`:"",
+});
+
+const INIT={
+  provider:"telecinesprogramacaodefilmes",language:"pt-BR",
+  vendor_id:"",type:"film",subtype:"feature",
+  spoken_locale:"pt-BR",country_origin:"BR",prod_country:"BR",
+  title:"",studio_title:"",synopsis:"",production_company:"",copyright:"",theatrical_date:"",
+  duration_min:"",duration_tc:"",timecode_format:"24/1 1/nonDrop",
+  synopsis_locales:[],
+  genres:[{code:"DRAMA-00",name:"Drama"}],
+  rating:"18",advisories:[],rating_systems:[],
+  cast:[{name:"",character:""}],
+  crew:[{name:"",roles:["Director"]}],
+  chapters:[{time:"00:00:00:00",title:"Capítulo 01",file:"capitulo01.jpg",md5:"",size:""}],
+  assets:{
+    full:{file:"",size:"",md5:"",ct:"0",cb:"0",cl:"0",cr:"0",textless:"true",
+          burned_locale:"pt-BR",burned_sub:"",locale:"pt-BR",
+          nfile:"",nsize:"",nmd5:"",subtitles:[],forced_subs:[],audios:[]},
+    preview:{file:"",size:"",md5:"",ct:"0",cb:"0",cl:"0",cr:"0",textless:"false",
+             burned:"pt-BR",burned_sub:"",locale:"pt-BR",pvw_image_time:""},
+    artwork:{file:"",size:"",md5:"",locale:"pt-BR"},
+    artwork_16_9:{file:"",size:"",md5:"",locale:"pt-BR"},
+    backdrop_wide:{file:"",size:"",md5:""},backdrop_tall:{file:"",size:"",md5:""},
+    logo_full:{file:"",size:"",md5:"",locale:"pt-BR"},
+    logo_single:{file:"",size:"",md5:"",locale:"pt-BR"},
+    extra_previews:[],extra_artworks:[],
+  },
+  products:[{territory:"BR",vod_type:"New Release",sale:true,hd_sale:true,vod:true,hd_vod:true,
+             price:"6",hd_price:"105",sale_start:"",sale_end:"",vod_start:"",vod_end:"",physical_date:""}],
+};
+
+function deepSet(obj,path,val){
+  const n=JSON.parse(JSON.stringify(obj));const k=path.split(".");let o=n;
+  for(let i=0;i<k.length-1;i++) o=o[isNaN(k[i])?k[i]:+k[i]];
+  o[isNaN(k[k.length-1])?k[k.length-1]:+k[k.length-1]]=val;return n;
+}
+function deepGet(obj,path){return path.split(".").reduce((o,k)=>o?.[isNaN(k)?k:+k],obj)??"";}
+
+function DateField({label,value,onChange}){
+  const ref=useRef(null);
+  return(
+    <div style={{marginBottom:10}}>
+      {label&&<label style={S.lbl}>{label}</label>}
+      <div style={{display:"flex"}}>
+        <input ref={ref} type="date" value={value||""} onChange={e=>onChange(e.target.value)}
+          style={{...S.inp,borderRadius:"6px 0 0 6px"}}/>
+        <button onClick={()=>ref.current?.click()}
+          style={{padding:"0 10px",borderRadius:"0 6px 6px 0",border:"1px solid #444",
+                  borderLeft:"none",background:"#1e1e1e",color:"#888",cursor:"pointer",fontSize:13,flexShrink:0}}>
+          📅
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const [tab,setTab]=useState("basic");
+  const [d,setD]=useState(INIT);
+  const [saveMsg,setSaveMsg]=useState("");
+  const [copied,setCopied]=useState(false);
+  const [bulkText,setBulkText]=useState("");
+  const [showBulk,setShowBulk]=useState(false);
+  const prevVid=useRef("");
+
+  useEffect(()=>{
+    try{
+      const r=storage.get("itunes-md");
+      if(r){
+        const loaded=JSON.parse(r.value);
+        if(!loaded.assets.full.forced_subs) loaded.assets.full.forced_subs=[];
+        if(!loaded.assets.full.subtitles)   loaded.assets.full.subtitles=[];
+        if(!loaded.assets.full.audios)      loaded.assets.full.audios=[];
+        if(!loaded.assets.extra_previews)   loaded.assets.extra_previews=[];
+        if(!loaded.assets.extra_artworks)   loaded.assets.extra_artworks=[];
+        if(!loaded.synopsis_locales)        loaded.synopsis_locales=[];
+        if(!loaded.rating_systems)          loaded.rating_systems=[];
+        if(loaded.assets.preview.pvw_image_time===undefined) loaded.assets.preview.pvw_image_time="";
+        setD(loaded);
+      }
+    }catch{}
+  },[]);
+
+  useEffect(()=>{
+    const vid=d.vendor_id;if(vid===prevVid.current)return;
+    const prev=prevVid.current,oF=assetFiles(prev),nF=assetFiles(vid);
+    const su=(c,o)=>!c||c===o;
+    setD(p=>{
+      const n=JSON.parse(JSON.stringify(p)),a=n.assets;
+      if(su(a.full.file,oF.ff))    a.full.file=nF.ff;
+      if(su(a.full.nfile,oF.fn))   a.full.nfile=nF.fn;
+      if(su(a.preview.file,oF.pf)) a.preview.file=nF.pf;
+      if(su(a.artwork.file,oF.af)) a.artwork.file=nF.af;
+      if(su(a.artwork_16_9.file,oF.a16)) a.artwork_16_9.file=nF.a16;
+      if(su(a.backdrop_wide.file,oF.bw)) a.backdrop_wide.file=nF.bw;
+      if(su(a.backdrop_tall.file,oF.bt)) a.backdrop_tall.file=nF.bt;
+      if(su(a.logo_full.file,oF.lf))  a.logo_full.file=nF.lf;
+      if(su(a.logo_single.file,oF.ls)) a.logo_single.file=nF.ls;
+      return n;
+    });
+    prevVid.current=vid;
+  },[d.vendor_id]);
+
+  const upd=(path,val)=>setD(p=>deepSet(p,path,val));
+  const updArr=fn=>setD(p=>{const n=JSON.parse(JSON.stringify(p));fn(n);return n;});
+
+  const save=()=>{
+    try{storage.set("itunes-md",JSON.stringify(d));setSaveMsg("✓ Salvo");setTimeout(()=>setSaveMsg(""),2000);}
+    catch{setSaveMsg("Erro");}
+  };
+
+  const importChapters=()=>{
+    const lines=bulkText.trim().split('\n').filter(l=>l.trim());
+    if(!lines.length)return;
+    const chs=lines.map((line,i)=>{
+      const p=line.split('|').map(x=>x.trim());
+      const time=p[0]||'00:00:00:00';
+      let title=p[1]||`Capítulo ${String(i+1).padStart(2,'0')}`;
+      if(title.includes(':')) title=title.split(':').slice(1).join(':').trim();
+      return{time,title,file:p[2]||chFile(i),size:p[3]||'',md5:p[4]||''};
+    });
+    updArr(n=>{n.chapters=chs;});
+    setBulkText('');setShowBulk(false);
+  };
+
+  const genXML=()=>{
+    const a=d.assets;
+    const castX=d.cast.filter(c=>c.name).map(c=>`\n      <cast_member>\n        <display_name>${esc(c.name)}</display_name>\n        <character_name>${esc(c.character)}</character_name>\n      </cast_member>`).join("");
+    const crewX=d.crew.filter(c=>c.name).map(c=>`\n      <crew_member>\n        <display_name>${esc(c.name)}</display_name>\n        <roles>${c.roles.map(r=>`\n          <role>${esc(r)}</role>`).join("")}\n        </roles>\n      </crew_member>`).join("");
+    const chX=d.chapters.map(ch=>`\n      <chapter>\n        <start_time>${esc(ch.time)}</start_time>\n        <titles>\n          <title locale="pt-BR">${esc(ch.title)}</title>\n        </titles>${ch.file?`\n        <artwork_file>\n          <file_name>${esc(ch.file)}</file_name>\n          <checksum type="md5">${esc(ch.md5)}</checksum>\n          <size>${esc(ch.size)}</size>\n        </artwork_file>`:""}\n      </chapter>`).join("");
+    const mkDF=(role,arr)=>arr.filter(s=>s.file).map(s=>`\n        <data_file role="${role}">\n          <locale name="${esc(s.locale)}"/>\n          <file_name>${esc(s.file)}</file_name>\n          <size>${esc(s.size)}</size>\n          <checksum type="md5">${esc(s.md5)}</checksum>\n        </data_file>`).join("");
+    const fullAttr=(o,isP)=>`          <attribute name="image.textless_master">${esc(o.textless)}</attribute>${o.textless==="false"&&(isP?o.burned:o.burned_locale)?`\n          <attribute name="image.burned_${isP?"forced_narrative":"titles"}.locale">${esc(isP?o.burned:o.burned_locale)}</attribute>`:""}${o.textless==="false"&&o.burned_sub?`\n          <attribute name="image.burned_subtitles.locale">${esc(o.burned_sub)}</attribute>`:""}`;
+    const cropX=o=>`          <attribute name="crop.top">${esc(o.ct)}</attribute>\n          <attribute name="crop.bottom">${esc(o.cb)}</attribute>\n          <attribute name="crop.left">${esc(o.cl)}</attribute>\n          <attribute name="crop.right">${esc(o.cr)}</attribute>`;
+    const fullX=`\n      <asset type="full">\n        <data_file role="source">\n          <locale name="${esc(a.full.locale)}"/>\n          <file_name>${esc(a.full.file)}</file_name>\n          <size>${esc(a.full.size)}</size>\n          <checksum type="md5">\n            ${esc(a.full.md5)}\n          </checksum>\n${cropX(a.full)}\n${fullAttr(a.full,false)}\n        </data_file>${mkDF("subtitles",a.full.subtitles)}${mkDF("forced_subtitles",a.full.forced_subs)}${mkDF("audio",a.full.audios)}${a.full.nfile?`\n        <data_file role="notes">\n          <file_name>${esc(a.full.nfile)}</file_name>\n          <size>${esc(a.full.nsize)}</size>\n          <checksum type="md5">\n            ${esc(a.full.nmd5)}\n          </checksum>\n        </data_file>`:""}\n      </asset>`;
+    const pvwTimeX=a.preview.pvw_image_time?`\n        <preview_image_time format="${esc(d.timecode_format)}">${esc(a.preview.pvw_image_time)}</preview_image_time>`:"";
+    const mkPrev=(p,terr)=>!p.file?"": `\n      <asset type="preview">\n        <territories><territory>${esc(terr)}</territory></territories>${pvwTimeX}\n        <data_file role="source">\n          <locale name="${esc(p.locale)}"/>\n          <file_name>${esc(p.file)}</file_name>\n          <size>${esc(p.size)}</size>\n          <checksum type="md5">\n            ${esc(p.md5)}\n          </checksum>\n${cropX(p)}\n${fullAttr(p,true)}\n        </data_file>\n      </asset>`;
+    const sa=(type,o,locale=true,terr=true)=>!o.file?"": `\n      <asset type="${type}">${terr?`\n        <territories><territory>WW</territory></territories>`:""}\n        <data_file>${locale?`\n          <locale name="${esc(o.locale)}"/>`:""}\n          <file_name>${esc(o.file)}</file_name>\n          <size>${esc(o.size)}</size>\n          <checksum type="md5">\n            ${esc(o.md5)}\n          </checksum>\n        </data_file>\n      </asset>`;
+    const extraArtX=a.extra_artworks.filter(x=>x.file).map(x=>`\n      <asset type="artwork">\n        <territories><territory>${esc(x.territory)}</territory></territories>\n        <data_file>\n          <locale name="${esc(x.locale)}"/>\n          <file_name>${esc(x.file)}</file_name>\n          <size>${esc(x.size)}</size>\n          <checksum type="md5">\n            ${esc(x.md5)}\n          </checksum>\n        </data_file>\n      </asset>`).join("");
+    const advX=d.advisories.map(c=>`\n      <advisory system="br-movies" code="${esc(c)}"/>`).join("");
+    const synLocX=d.synopsis_locales.filter(s=>s.synopsis||s.title).map(s=>`\n\n    <locale name="${esc(s.locale)}">${s.title?`\n      <title>${esc(s.title)}</title>`:""}\n      <synopsis>\n        ${esc(s.synopsis)}\n      </synopsis>\n    </locale>`).join("");
+    const prodsX=d.products.map(p=>`\n      <product>\n\n        <territory>${esc(p.territory)}</territory>\n\n        <cleared_for_sale>${p.sale}</cleared_for_sale>\n        <cleared_for_hd_sale>${p.hd_sale}</cleared_for_hd_sale>\n\n        <wholesale_price_tier>${esc(p.price)}</wholesale_price_tier>\n        <hd_wholesale_price_tier>${esc(p.hd_price)}</hd_wholesale_price_tier>\n\n        <sales_start_date>${esc(p.sale_start)}</sales_start_date>\n        <sales_end_date>${esc(p.sale_end)}</sales_end_date>\n\n        <cleared_for_vod>${p.vod}</cleared_for_vod>\n        <cleared_for_hd_vod>${p.hd_vod}</cleared_for_hd_vod>\n\n        <vod_type>${esc(p.vod_type)}</vod_type>\n\n        <available_for_vod_date>${esc(p.vod_start)}</available_for_vod_date>\n        <unavailable_for_vod_date>${esc(p.vod_end)}</unavailable_for_vod_date>\n\n        <physical_release_date>${esc(p.physical_date)}</physical_release_date>\n\n      </product>`).join("\n");
+
+    return `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://apple.com/itunes/importer" version="film5.1">
+
+  <provider>${esc(d.provider)}</provider>
+  <language>${esc(d.language)}</language>
+
+  <video>
+
+    <type>${esc(d.type)}</type>
+    <subtype>${esc(d.subtype)}</subtype>
+    <vendor_id>${esc(d.vendor_id)}</vendor_id>
+
+    <countries_of_origin>
+      <country primary="true">${esc(d.country_origin)}</country>
+    </countries_of_origin>
+    <production_countries>
+      <country primary="true">${esc(d.prod_country)}</country>
+    </production_countries>
+
+    <original_spoken_locale>${esc(d.spoken_locale)}</original_spoken_locale>
+    <title>${esc(d.title)}</title>
+    <studio_release_title>${esc(d.studio_title)}</studio_release_title>
+
+    <synopsis>
+      ${esc(d.synopsis)}
+    </synopsis>${synLocX}
+
+    <production_company>${esc(d.production_company)}</production_company>
+    <copyright_cline>${esc(d.copyright)}</copyright_cline>
+    <theatrical_release_date>${esc(d.theatrical_date)}</theatrical_release_date>
+
+    <genres>
+      ${d.genres.map(g=>`<genre code="${esc(g.code)}">${esc(g.name)}</genre>`).join("\n      ")}
+    </genres>
+
+    <ratings>
+      <rating system="br-movies" code="${esc(d.rating)}"/>${advX}
+    </ratings>
+
+    <cast>${castX}
+    </cast>
+
+    <crew>${crewX}
+    </crew>
+
+    <chapters>
+      <timecode_format>${esc(d.timecode_format)}</timecode_format>
+${chX}
+    </chapters>
+
+    <assets>
+${fullX}
+${mkPrev(a.preview,"WW")}
+${a.extra_previews.map(p=>mkPrev(p,p.territory)).join("")}
+${sa("artwork",a.artwork)}
+${sa("artwork_16:9",a.artwork_16_9)}
+${extraArtX}
+${sa("backdrop_wide",a.backdrop_wide,false)}
+${sa("backdrop_tall",a.backdrop_tall,false)}
+${sa("full_color_content_logo",a.logo_full,true,false)}
+${sa("single_color_content_logo",a.logo_single,true,false)}
+    </assets>
+
+    <products>
+${prodsX}
+    </products>
+
+  </video>
+</package>`;
+  };
+
+  const download=()=>{
+    const blob=new Blob([genXML()],{type:"application/xml"});
+    const url=URL.createObjectURL(blob);
+    const el=document.createElement("a");
+    el.href=url;el.download=`${d.vendor_id||"metadata"}.xml`;el.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const field=(label,path,type="text",ph="")=>(
+    <div style={{marginBottom:10}}><label style={S.lbl}>{label}</label>
+      {type==="date"
+        ? <DateField value={deepGet(d,path)} onChange={v=>upd(path,v)}/>
+        : <input type={type} value={deepGet(d,path)} placeholder={ph} onChange={e=>upd(path,e.target.value)} style={S.inp}/>
+      }
+    </div>
+  );
+  const sel=(label,path,options)=>(
+    <div style={{marginBottom:10}}><label style={S.lbl}>{label}</label>
+      <select value={deepGet(d,path)} onChange={e=>upd(path,e.target.value)} style={{...S.inp,cursor:"pointer"}}>
+        {options.map(o=><option key={o.v??o} value={o.v??o}>{o.l??o}</option>)}
+      </select>
+    </div>
+  );
+  const textlessPanel=(basePath)=>{
+    const v=deepGet(d,`${basePath}.textless`),isPrev=basePath.includes("preview");
+    return(
+      <div>
+        <label style={S.lbl}>Textless</label>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          {["true","false"].map(x=>(
+            <button key={x} onClick={()=>upd(`${basePath}.textless`,x)} style={{padding:"5px 14px",borderRadius:6,border:"1px solid",borderColor:v===x?"#0071e3":"#3a3a3a",background:v===x?"#0071e320":"transparent",color:v===x?"#4da3ff":"#aaa",cursor:"pointer",fontSize:12,fontWeight:v===x?700:400}}>
+              {x==="true"?"Sim (textless)":"Não (com texto)"}
+            </button>
+          ))}
+        </div>
+        {v==="false"&&(
+          <div style={g2}>
+            <div><label style={S.lbl}>{isPrev?"Narrativa Forçada":"Texto Queimado"}</label>
+              <select value={deepGet(d,`${basePath}.${isPrev?"burned":"burned_locale"}`)} onChange={e=>upd(`${basePath}.${isPrev?"burned":"burned_locale"}`,e.target.value)} style={{...S.inp,cursor:"pointer"}}>
+                {LOCALES.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+              </select>
+            </div>
+            <div><label style={S.lbl}>Legenda Queimada</label>
+              <select value={deepGet(d,`${basePath}.burned_sub`)||""} onChange={e=>upd(`${basePath}.burned_sub`,e.target.value)} style={{...S.inp,cursor:"pointer"}}>
+                <option value="">Nenhuma</option>
+                {LOCALES.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const avRow=(arr,pathBase,label,filePh)=>arr.map((x,i)=>(
+    <div key={i} style={{...S.card,marginBottom:8,padding:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+        <span style={{fontSize:12,color:"#aad"}}>{label} {i+1}</span>
+        <button onClick={()=>updArr(n=>{n.assets.full[pathBase].splice(i,1);})} style={S.rmBtn}>✕</button>
+      </div>
+      <div style={g4}>
+        <div><label style={S.lbl}>Locale</label>
+          <select value={x.locale} onChange={e=>{
+            const newL=e.target.value,oldL=x.locale;
+            updArr(n=>{
+              n.assets.full[pathBase][i].locale=newL;
+              if(pathBase==="forced_subs"&&d.vendor_id){
+                const oldPat=`${d.vendor_id}-ForcedSub_${oldL}.itt`;
+                if(!x.file||x.file===oldPat) n.assets.full[pathBase][i].file=`${d.vendor_id}-ForcedSub_${newL}.itt`;
+              }
+            });
+          }} style={{...S.inp,cursor:"pointer"}}>
+            {LOCALES.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+          </select>
+        </div>
+        <div><label style={S.lbl}>Arquivo</label><input value={x.file} placeholder={filePh} onChange={e=>updArr(n=>{n.assets.full[pathBase][i].file=e.target.value;})} style={{...S.inp,fontFamily:"monospace",fontSize:11}}/></div>
+        <div><label style={S.lbl}>MD5</label><input value={x.md5} onChange={e=>updArr(n=>{n.assets.full[pathBase][i].md5=e.target.value;})} style={{...S.inp,fontFamily:"monospace",fontSize:11}}/></div>
+        <div><label style={S.lbl}>Tamanho</label><input value={x.size} onChange={e=>updArr(n=>{n.assets.full[pathBase][i].size=e.target.value;})} style={S.inp}/></div>
+      </div>
+    </div>
+  ));
+
+  const prodCard=(p,i)=>(
+    <div key={i} style={{...S.card,marginBottom:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <span style={{fontWeight:600,fontSize:13,color:"#7ab4f5"}}>Produto {i+1}{p.territory?` — ${p.territory}`:""}</span>
+        {d.products.length>1&&<button onClick={()=>updArr(n=>{n.products.splice(i,1);})} style={S.rmBtn}>✕ Remover</button>}
+      </div>
+      <div style={g2}>
+        <div><label style={S.lbl}>Território</label>
+          <select value={p.territory} onChange={e=>updArr(n=>{n.products[i].territory=e.target.value;})} style={{...S.inp,cursor:"pointer"}}>
+            <option value="">Selecione</option>{COUNTRIES.map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div><label style={S.lbl}>Tipo VOD</label>
+          <select value={p.vod_type} onChange={e=>updArr(n=>{n.products[i].vod_type=e.target.value;})} style={{...S.inp,cursor:"pointer"}}>
+            <option>New Release</option><option>Library</option><option>New Release Rental Only</option>
+          </select>
+        </div>
+      </div>
+      <div style={g2}>
+        <DateField label="Início Vendas" value={p.sale_start} onChange={v=>updArr(n=>{n.products[i].sale_start=v;})}/>
+        <DateField label="Fim Vendas" value={p.sale_end} onChange={v=>updArr(n=>{n.products[i].sale_end=v;})}/>
+      </div>
+      <div style={g2}>
+        <DateField label="Início VOD" value={p.vod_start} onChange={v=>updArr(n=>{n.products[i].vod_start=v;})}/>
+        <DateField label="Fim VOD" value={p.vod_end} onChange={v=>updArr(n=>{n.products[i].vod_end=v;})}/>
+      </div>
+      <div style={{...g3,marginBottom:10}}>
+        <DateField label="Lançamento Físico" value={p.physical_date} onChange={v=>updArr(n=>{n.products[i].physical_date=v;})}/>
+        <div><label style={S.lbl}>Price Tier SD</label><input value={p.price} onChange={e=>updArr(n=>{n.products[i].price=e.target.value;})} style={S.inp} placeholder="6"/></div>
+        <div><label style={S.lbl}>Price Tier HD</label><input value={p.hd_price} onChange={e=>updArr(n=>{n.products[i].hd_price=e.target.value;})} style={S.inp} placeholder="105"/></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+        {[["Cleared for Sale","sale"],["Cleared for HD Sale","hd_sale"],["Cleared for VOD","vod"],["Cleared for HD VOD","hd_vod"]].map(([lbl,key])=>(
+          <label key={key} style={{display:"flex",alignItems:"center",gap:7,cursor:"pointer",fontSize:12,padding:"4px 8px",borderRadius:5,border:`1px solid ${p[key]?"#0071e3":"#333"}`,background:p[key]?"#0071e318":"transparent"}}>
+            <input type="checkbox" checked={!!p[key]} onChange={e=>updArr(n=>{n.products[i][key]=e.target.checked;})} style={{width:13,height:13}}/>{lbl}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+
+  const TABS=[
+    {id:"basic",label:"📋 Básico"},{id:"ratings",label:"🎬 Gênero & Rating"},
+    {id:"cast",label:"🎭 Elenco & Equipe"},{id:"chapters",label:"📌 Capítulos"},
+    {id:"assets",label:"📁 Assets"},{id:"av",label:"🎙 Áudio & Legendas"},
+    {id:"products",label:"🛒 Produtos"},{id:"xml",label:"💾 XML"},
+  ];
+
+  return(
+    <div style={{fontFamily:"system-ui,sans-serif",maxWidth:900,margin:"0 auto",padding:16,color:"#eee",background:"#0d0d0d",minHeight:"100vh"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+        <div>
+          <div style={{fontWeight:700,fontSize:16}}>🍎 iTunes Metadata Generator</div>
+          <div style={{fontSize:11,color:"#555"}}>Apple film5.1 · {d.vendor_id||<span style={{color:"#444"}}>vendor_id não definido</span>}</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>{if(confirm("Limpar tudo?"))setD(INIT);}} style={{padding:"6px 12px",borderRadius:6,border:"1px solid #3a3a3a",background:"transparent",color:"#888",cursor:"pointer",fontSize:12}}>Limpar</button>
+          <button onClick={save} style={{padding:"6px 12px",borderRadius:6,border:"1px solid #3a3a3a",background:"transparent",color:"#eee",cursor:"pointer",fontSize:12}}>{saveMsg||"💾 Salvar"}</button>
+          <button onClick={download} style={{padding:"6px 14px",borderRadius:6,border:"none",background:"#0071e3",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:600}}>⬇ Baixar XML</button>
+        </div>
+      </div>
+
+      <div style={{display:"flex",borderBottom:"1px solid #222",marginBottom:18,overflowX:"auto"}}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"8px 11px",border:"none",whiteSpace:"nowrap",borderBottom:tab===t.id?"2px solid #0071e3":"2px solid transparent",background:"transparent",color:tab===t.id?"#4da3ff":"#666",cursor:"pointer",fontSize:11,fontWeight:tab===t.id?700:400}}>{t.label}</button>
+        ))}
+      </div>
+
+      {tab==="basic"&&<div>
+        <div style={g2}>
+          {field("Provider","provider","text","telecinesprogramacaodefilmes")}
+          <div>
+            <label style={S.lbl}>Vendor ID</label>
+            <input value={d.vendor_id} placeholder="11823118" onChange={e=>upd("vendor_id",e.target.value)} style={{...S.inp,borderColor:d.vendor_id?"#0071e3":"#444"}}/>
+            {d.vendor_id&&<div style={{fontSize:10,color:"#0071e3",marginTop:3}}>✓ Nomes de arquivo atualizados automaticamente</div>}
+          </div>
+        </div>
+        <div style={g2}>{field("Título","title","text","Nome do filme")}{field("Studio Release Title","studio_title","text","Nome do filme")}</div>
+        <div style={{marginBottom:10}}><label style={S.lbl}>Sinopse</label><textarea value={d.synopsis} rows={4} placeholder="Descrição do filme..." onChange={e=>upd("synopsis",e.target.value)} style={{...S.inp,resize:"vertical"}}/></div>
+        <div style={g2}>{field("Produtora","production_company","text","113 Filmes")}{field("Copyright","copyright","text","2021 113 Filmes")}</div>
+        <div style={g2}>{field("Data de Estreia Teatral","theatrical_date","date")}{sel("Idioma do Áudio","spoken_locale",LOCALES)}</div>
+        <div style={g2}>{sel("País de Origem","country_origin",COUNTRIES)}{sel("País de Produção","prod_country",COUNTRIES)}</div>
+        <div style={g2}>{sel("Tipo","type",[{v:"film",l:"Film"},{v:"short_film",l:"Short Film"},{v:"special",l:"Special"}])}{sel("Subtipo","subtype",[{v:"feature",l:"Feature"},{v:"short",l:"Short"}])}</div>
+        <div style={g2}>{field("Duração (min)","duration_min","text","109")}{field("Duração TC","duration_tc","text","01:49:00:00")}</div>
+        <div style={{marginBottom:14}}>
+          <label style={S.lbl}>Frame Rate (Timecode Format)</label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
+            {TC_FORMATS.map(f=>{const on=d.timecode_format===f.v;return(
+              <button key={f.v} onClick={()=>upd("timecode_format",f.v)} style={{padding:"7px 14px",borderRadius:6,border:`1px solid ${on?"#0071e3":"#3a3a3a"}`,background:on?"#0071e320":"transparent",color:on?"#4da3ff":"#aaa",cursor:"pointer",textAlign:"left"}}>
+                <div style={{fontWeight:700,fontSize:13}}>{f.l}</div>
+                <div style={{fontSize:10,color:on?"#7ab4f5":"#555",marginTop:1}}>{f.desc}</div>
+              </button>
+            );})}
+          </div>
+          <div style={{fontSize:10,color:"#555",marginTop:5,fontFamily:"monospace"}}>{d.timecode_format}</div>
+        </div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>🌐 Títulos e Sinopses Regionais</div>
+          {d.synopsis_locales.map((s,i)=>(
+            <div key={i} style={{...S.card,marginBottom:8,padding:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontSize:12,color:"#aad"}}>Locale {i+1}{s.locale?` — ${s.locale}`:""}</span>
+                <button onClick={()=>updArr(n=>{n.synopsis_locales.splice(i,1);})} style={S.rmBtn}>✕</button>
+              </div>
+              <div style={g2}>
+                <div><label style={S.lbl}>Idioma</label><select value={s.locale} onChange={e=>updArr(n=>{n.synopsis_locales[i].locale=e.target.value;})} style={{...S.inp,cursor:"pointer"}}>{LOCALES.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}</select></div>
+                <div><label style={S.lbl}>Título Regional</label><input value={s.title} onChange={e=>updArr(n=>{n.synopsis_locales[i].title=e.target.value;})} style={S.inp} placeholder="Título no idioma"/></div>
+              </div>
+              <div><label style={S.lbl}>Sinopse Regional</label><textarea value={s.synopsis} rows={3} onChange={e=>updArr(n=>{n.synopsis_locales[i].synopsis=e.target.value;})} style={{...S.inp,resize:"vertical"}}/></div>
+            </div>
+          ))}
+          <button onClick={()=>updArr(n=>{n.synopsis_locales.push({locale:"es-419",title:"",synopsis:""});})} style={S.addBtn}>+ Adicionar Locale</button>
+        </div>
+      </div>}
+
+      {tab==="ratings"&&<div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Gêneros</div>
+          {d.genres.map((g,i)=>(
+            <div key={i} style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-end"}}>
+              <div style={{flex:2}}><label style={S.lbl}>Gênero</label>
+                <select value={g.code} onChange={e=>{const opt=GENRE_OPTIONS.find(x=>x.code===e.target.value)||{code:e.target.value,name:e.target.value};updArr(n=>{n.genres[i]={code:opt.code,name:opt.name};});}} style={{...S.inp,cursor:"pointer"}}>
+                  {GENRE_OPTIONS.map(o=><option key={o.code} value={o.code}>{o.code} – {o.name}</option>)}
+                </select>
+              </div>
+              <div style={{flex:1}}><label style={S.lbl}>Nome XML</label><input value={g.name} onChange={e=>updArr(n=>{n.genres[i].name=e.target.value;})} style={S.inp}/></div>
+              {d.genres.length>1&&<button onClick={()=>updArr(n=>{n.genres.splice(i,1);})} style={S.rmBtn}>✕</button>}
+            </div>
+          ))}
+          <button onClick={()=>updArr(n=>{n.genres.push({code:"DRAMA-00",name:"Drama"});})} style={S.addBtn}>+ Gênero</button>
+        </div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Classificação BR</div>
+          {sel("Rating","rating",[{v:"L",l:"L – Livre"},{v:"10",l:"10"},{v:"12",l:"12"},{v:"14",l:"14"},{v:"16",l:"16"},{v:"18",l:"18"}])}
+          <label style={S.lbl}>Advisories</label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
+            {ADVISORIES.map(a=>(
+              <label key={a.code} style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",padding:"4px 9px",borderRadius:4,border:`1px solid ${d.advisories.includes(a.code)?"#0071e3":"#3a3a3a"}`,background:d.advisories.includes(a.code)?"#0071e320":"transparent"}}>
+                <input type="checkbox" checked={d.advisories.includes(a.code)} onChange={e=>updArr(n=>{if(e.target.checked)n.advisories.push(a.code);else n.advisories=n.advisories.filter(x=>x!==a.code);})} style={{width:12,height:12}}/>{a.label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>Classificações Regionais</div>
+          {d.rating_systems.map((r,i)=>(
+            <div key={i} style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-end"}}>
+              <div><label style={S.lbl}>Sistema</label><input value={r.system} placeholder="ar-movies" onChange={e=>updArr(n=>{n.rating_systems[i].system=e.target.value;})} style={{...S.inp,width:110}}/></div>
+              <div><label style={S.lbl}>Código</label><input value={r.code} placeholder="ATP" onChange={e=>updArr(n=>{n.rating_systems[i].code=e.target.value;})} style={{...S.inp,width:70}}/></div>
+              <div style={{flex:1}}><label style={S.lbl}>Advisory</label><input value={r.reason} onChange={e=>updArr(n=>{n.rating_systems[i].reason=e.target.value;})} style={S.inp}/></div>
+              <button onClick={()=>updArr(n=>{n.rating_systems.splice(i,1);})} style={S.rmBtn}>✕</button>
+            </div>
+          ))}
+          <button onClick={()=>updArr(n=>{n.rating_systems.push({system:"",code:"",reason:""});})} style={S.addBtn}>+ Adicionar Sistema</button>
+        </div>
+      </div>}
+
+      {tab==="cast"&&<div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Elenco</div>
+          {d.cast.map((c,i)=>(
+            <div key={i} style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-end"}}>
+              <div style={{flex:1}}><label style={S.lbl}>Nome</label><input value={c.name} onChange={e=>updArr(n=>{n.cast[i].name=e.target.value;})} style={S.inp}/></div>
+              <div style={{flex:1}}><label style={S.lbl}>Personagem</label><input value={c.character} onChange={e=>updArr(n=>{n.cast[i].character=e.target.value;})} style={S.inp}/></div>
+              {d.cast.length>1&&<button onClick={()=>updArr(n=>{n.cast.splice(i,1);})} style={S.rmBtn}>✕</button>}
+            </div>
+          ))}
+          <button onClick={()=>updArr(n=>{n.cast.push({name:"",character:""});})} style={S.addBtn}>+ Adicionar Ator</button>
+        </div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Equipe Técnica</div>
+          {d.crew.map((c,i)=>(
+            <div key={i} style={{...S.card,marginBottom:8,padding:10}}>
+              <div style={{display:"flex",gap:8,alignItems:"flex-end",marginBottom:8}}>
+                <div style={{flex:1}}><label style={S.lbl}>Nome</label><input value={c.name} onChange={e=>updArr(n=>{n.crew[i].name=e.target.value;})} style={S.inp}/></div>
+                {d.crew.length>1&&<button onClick={()=>updArr(n=>{n.crew.splice(i,1);})} style={S.rmBtn}>✕</button>}
+              </div>
+              <label style={S.lbl}>Funções</label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:4}}>
+                {CREW_ROLES.map(r=>(
+                  <label key={r} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,cursor:"pointer",padding:"3px 7px",borderRadius:4,border:`1px solid ${c.roles.includes(r)?"#0071e3":"#3a3a3a"}`,background:c.roles.includes(r)?"#0071e320":"transparent"}}>
+                    <input type="checkbox" checked={c.roles.includes(r)} onChange={e=>updArr(n=>{if(e.target.checked)n.crew[i].roles.push(r);else n.crew[i].roles=n.crew[i].roles.filter(x=>x!==r);})} style={{width:11,height:11}}/>{r}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+          <button onClick={()=>updArr(n=>{n.crew.push({name:"",roles:[]});})} style={S.addBtn}>+ Adicionar Membro</button>
+        </div>
+      </div>}
+
+      {tab==="chapters"&&<div>
+        <div style={{...S.card,border:"1px solid #2a4a2a",background:"#0d1f0d",marginBottom:14}}>
+          <button onClick={()=>setShowBulk(v=>!v)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",background:"none",border:"none",cursor:"pointer",color:"#6db86d",padding:0}}>
+            <span style={{fontWeight:600,fontSize:13}}>⚡ Importar Capítulos em Massa</span>
+            <span style={{fontSize:12}}>{showBulk?"▲ Fechar":"▼ Abrir"}</span>
+          </button>
+          {showBulk&&<div style={{marginTop:12}}>
+            <div style={{fontSize:11,color:"#666",marginBottom:8,lineHeight:1.6}}>
+              Cole uma linha por capítulo:<br/>
+              <code style={{color:"#aad"}}>timecode | título | arquivo | tamanho | md5</code>
+            </div>
+            <textarea value={bulkText} onChange={e=>setBulkText(e.target.value)} rows={7}
+              placeholder={"00:00:00:00 | Capítulo 01 | capitulo01.jpg | 122647 | abc123\n00:13:01:17 | Capítulo 02 | capitulo02.jpg | 104651 | fec9d8"}
+              style={{...S.inp,fontFamily:"monospace",fontSize:11,resize:"vertical"}}/>
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <button onClick={importChapters} style={{padding:"7px 16px",borderRadius:6,border:"none",background:"#27ae60",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:600}}>
+                ⬆ Importar {bulkText.trim().split('\n').filter(l=>l.trim()).length} capítulo(s)
+              </button>
+              <button onClick={()=>{setBulkText("");setShowBulk(false);}} style={{padding:"7px 12px",borderRadius:6,border:"1px solid #3a3a3a",background:"transparent",color:"#888",cursor:"pointer",fontSize:12}}>Cancelar</button>
+            </div>
+          </div>}
+        </div>
+        {d.chapters.map((ch,i)=>(
+          <div key={i} style={{...S.card,marginBottom:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontWeight:600,fontSize:13,color:"#7ab4f5"}}>Capítulo {i+1}</span>
+              {d.chapters.length>1&&<button onClick={()=>updArr(n=>{n.chapters.splice(i,1);})} style={S.rmBtn}>✕</button>}
+            </div>
+            <div style={g2}>
+              <div><label style={S.lbl}>Timecode</label><input value={ch.time} placeholder="00:00:00:00" onChange={e=>updArr(n=>{n.chapters[i].time=e.target.value;})} style={{...S.inp,fontFamily:"monospace"}}/></div>
+              <div><label style={S.lbl}>Título</label><input value={ch.title} onChange={e=>updArr(n=>{n.chapters[i].title=e.target.value;})} style={S.inp}/></div>
+            </div>
+            <div style={g3}>
+              <div><label style={S.lbl}>Arquivo artwork</label><input value={ch.file} onChange={e=>updArr(n=>{n.chapters[i].file=e.target.value;})} style={{...S.inp,fontFamily:"monospace",fontSize:12}}/></div>
+              <div><label style={S.lbl}>MD5</label><input value={ch.md5} onChange={e=>updArr(n=>{n.chapters[i].md5=e.target.value;})} style={{...S.inp,fontFamily:"monospace",fontSize:11}}/></div>
+              <div><label style={S.lbl}>Tamanho (bytes)</label><input value={ch.size} onChange={e=>updArr(n=>{n.chapters[i].size=e.target.value;})} style={S.inp}/></div>
+            </div>
+          </div>
+        ))}
+        <button onClick={()=>updArr(n=>{const idx=n.chapters.length;n.chapters.push({time:"00:00:00:00",title:`Capítulo ${String(idx+1).padStart(2,"0")}`,file:chFile(idx),md5:"",size:""});})} style={S.addBtn}>+ Adicionar Capítulo</button>
+      </div>}
+
+      {tab==="assets"&&<div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10,color:"#7ab4f5"}}>📽 Full Source</div>
+          <div style={g2}><div><label style={S.lbl}>Arquivo (.mov)</label><input value={d.assets.full.file} onChange={e=>upd("assets.full.file",e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:12}}/></div>{sel("Locale","assets.full.locale",LOCALES)}</div>
+          <div style={g2}><div><label style={S.lbl}>MD5</label><input value={d.assets.full.md5} onChange={e=>upd("assets.full.md5",e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:11}}/></div><div><label style={S.lbl}>Tamanho (bytes)</label><input value={d.assets.full.size} onChange={e=>upd("assets.full.size",e.target.value)} style={S.inp}/></div></div>
+          <label style={{...S.lbl,marginBottom:6}}>Crop (pixels)</label>
+          <div style={{...g4,marginBottom:12}}>{[["ct","Top"],["cb","Bottom"],["cl","Left"],["cr","Right"]].map(([k,l])=>(<div key={k}><label style={{...S.lbl,textTransform:"none"}}>{l}</label><input value={d.assets.full[k]} onChange={e=>upd(`assets.full.${k}`,e.target.value)} style={S.inp} placeholder="0"/></div>))}</div>
+          {textlessPanel("assets.full")}
+          <div style={{borderTop:"1px solid #2a2a2a",marginTop:8,paddingTop:10}}>
+            <div style={{fontSize:11,color:"#555",marginBottom:8}}>Notes PDF</div>
+            <div style={g3}><div><label style={S.lbl}>Arquivo</label><input value={d.assets.full.nfile} onChange={e=>upd("assets.full.nfile",e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:12}}/></div><div><label style={S.lbl}>MD5</label><input value={d.assets.full.nmd5} onChange={e=>upd("assets.full.nmd5",e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:11}}/></div><div><label style={S.lbl}>Tamanho</label><input value={d.assets.full.nsize} onChange={e=>upd("assets.full.nsize",e.target.value)} style={S.inp}/></div></div>
+          </div>
+        </div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10,color:"#7ab4f5"}}>🎬 Preview Principal (WW)</div>
+          <div style={{marginBottom:10}}>
+            <label style={S.lbl}>Preview Image Time <span style={{color:"#555",textTransform:"none",letterSpacing:0}}>(opcional)</span></label>
+            <input value={d.assets.preview.pvw_image_time} placeholder="00:00:10:00" onChange={e=>upd("assets.preview.pvw_image_time",e.target.value)} style={{...S.inp,fontFamily:"monospace",maxWidth:180}}/>
+          </div>
+          <div style={g2}><div><label style={S.lbl}>Arquivo (.mov)</label><input value={d.assets.preview.file} onChange={e=>upd("assets.preview.file",e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:12}}/></div>{sel("Locale","assets.preview.locale",LOCALES)}</div>
+          <div style={g2}><div><label style={S.lbl}>MD5</label><input value={d.assets.preview.md5} onChange={e=>upd("assets.preview.md5",e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:11}}/></div><div><label style={S.lbl}>Tamanho (bytes)</label><input value={d.assets.preview.size} onChange={e=>upd("assets.preview.size",e.target.value)} style={S.inp}/></div></div>
+          <label style={{...S.lbl,marginBottom:6}}>Crop (pixels)</label>
+          <div style={{...g4,marginBottom:12}}>{[["ct","Top"],["cb","Bottom"],["cl","Left"],["cr","Right"]].map(([k,l])=>(<div key={k}><label style={{...S.lbl,textTransform:"none"}}>{l}</label><input value={d.assets.preview[k]} onChange={e=>upd(`assets.preview.${k}`,e.target.value)} style={S.inp} placeholder="0"/></div>))}</div>
+          {textlessPanel("assets.preview")}
+        </div>
+        {[{key:"artwork",label:"🖼 Artwork (Poster)",locale:true},{key:"artwork_16_9",label:"🖼 Artwork 16:9",locale:true},{key:"backdrop_wide",label:"🌄 Backdrop Wide",locale:false},{key:"backdrop_tall",label:"📱 Backdrop Tall",locale:false},{key:"logo_full",label:"🎨 Logo Full Color",locale:true},{key:"logo_single",label:"⬜ Logo Single Color",locale:true}].map(({key,label,locale})=>(
+          <div key={key} style={S.card}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:10,color:"#7ab4f5"}}>{label}</div>
+            <div style={locale?g4:g3}>
+              {locale&&sel("Locale",`assets.${key}.locale`,LOCALES)}
+              <div><label style={S.lbl}>Arquivo</label><input value={d.assets[key].file} onChange={e=>upd(`assets.${key}.file`,e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:12}}/></div>
+              <div><label style={S.lbl}>MD5</label><input value={d.assets[key].md5} onChange={e=>upd(`assets.${key}.md5`,e.target.value)} style={{...S.inp,fontFamily:"monospace",fontSize:11}}/></div>
+              <div><label style={S.lbl}>Tamanho</label><input value={d.assets[key].size} onChange={e=>upd(`assets.${key}.size`,e.target.value)} style={S.inp}/></div>
+            </div>
+          </div>
+        ))}
+      </div>}
+
+      {tab==="av"&&<div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>🔡 Legendas Forçadas <span style={{fontSize:11,color:"#555",fontWeight:400}}>(role="forced_subtitles")</span></div>
+          <div style={{fontSize:11,color:"#555",marginBottom:10}}>Padrão: <code style={{color:"#aad"}}>{d.vendor_id||"VENDOR"}-ForcedSub_pt-BR.itt</code></div>
+          {avRow(d.assets.full.forced_subs,"forced_subs","Leg. Forçada",`${d.vendor_id||"VENDOR"}-ForcedSub_pt-BR.itt`)}
+          <button onClick={()=>updArr(n=>{const loc="pt-BR";n.assets.full.forced_subs.push({locale:loc,file:d.vendor_id?`${d.vendor_id}-ForcedSub_${loc}.itt`:"",size:"",md5:""});})} style={S.addBtn}>+ Adicionar Legenda Forçada</button>
+        </div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>📝 Legendas <span style={{fontSize:11,color:"#555",fontWeight:400}}>(role="subtitles")</span></div>
+          {avRow(d.assets.full.subtitles,"subtitles","Legenda",`${d.vendor_id||"VENDOR"}_pt-BR.itt`)}
+          <button onClick={()=>updArr(n=>{n.assets.full.subtitles.push({locale:"pt-BR",file:"",size:"",md5:""});})} style={S.addBtn}>+ Adicionar Legenda</button>
+        </div>
+        <div style={S.card}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>🔊 Áudio <span style={{fontSize:11,color:"#555",fontWeight:400}}>(role="audio")</span></div>
+          {avRow(d.assets.full.audios,"audios","Áudio",`${d.vendor_id||"VENDOR"}-audio_pt-BR.mov`)}
+          <button onClick={()=>updArr(n=>{n.assets.full.audios.push({locale:"pt-BR",file:"",size:"",md5:""});})} style={S.addBtn}>+ Adicionar Áudio</button>
+        </div>
+      </div>}
+
+      {tab==="products"&&<div>
+        {d.products.map((p,i)=>prodCard(p,i))}
+        <button onClick={()=>updArr(n=>{n.products.push({territory:"",vod_type:"New Release",sale:true,hd_sale:true,vod:true,hd_vod:true,price:"6",hd_price:"105",sale_start:"",sale_end:"",vod_start:"",vod_end:"",physical_date:""});})} style={S.addBtn}>+ Adicionar Produto</button>
+      </div>}
+
+      {tab==="xml"&&<div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8}}>
+          <span style={{fontSize:12,color:"#666"}}>Preview do XML gerado</span>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>{navigator.clipboard.writeText(genXML()).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});}} style={{padding:"6px 12px",borderRadius:6,border:"1px solid #3a3a3a",background:"transparent",color:"#eee",cursor:"pointer",fontSize:12}}>{copied?"✓ Copiado":"📋 Copiar"}</button>
+            <button onClick={download} style={{padding:"6px 14px",borderRadius:6,border:"none",background:"#0071e3",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:600}}>⬇ Baixar {d.vendor_id||"metadata"}.xml</button>
+          </div>
+        </div>
+        <pre style={{background:"#080808",border:"1px solid #222",borderRadius:8,padding:14,fontSize:11,overflow:"auto",maxHeight:580,lineHeight:1.6,color:"#9ab",margin:0,fontFamily:"'Courier New',monospace"}}>{genXML()}</pre>
+      </div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
